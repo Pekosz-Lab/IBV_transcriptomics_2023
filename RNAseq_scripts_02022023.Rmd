@@ -1,0 +1,1035 @@
+---
+title: "Jo_RNAseq"
+author: "Elgin Akin"
+date: "3/11/2022"
+output: html_document
+Theme: cosmo
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+# TODO: INSERT Sample Extraction and Library Prep Methods
+
+# Processing featurecounts via DESeq2 
+Use genecount matrix generated in Partek from STAR alignment to hg38.
+
+```{r}
+# if (!requireNamespace("BiocManager", quietly = TRUE))
+# install.packages("BiocManager")
+# BiocManager::install("DESeq2")
+# BiocManager::install("apeglm")
+
+library(DESeq2)
+library(apeglm)
+library(tidyverse)
+
+# read featurecount data
+cts <- read.csv("./raw_data/Partek_Jo_NovaSeq_1_Filter_features_Filtered_counts_reordered_mock0rm_Jo4rm_NON_NORMALIZED_RAW.txt", sep = "\t", header = TRUE) #columns reordered by condition
+
+coldata <- read.csv("./raw_data/col_data_mock0-rm_Jo4-rm.txt", sep = "\t", header = TRUE)
+#colData <- coldata[, c(1, 2)] # run analysis by virus - coldata by virus removes treatment column
+
+cts$gene_ID <- as.character(cts$gene_ID)
+countDataMatrix <- as.matrix(cts[, -1])
+rownames(countDataMatrix) <- cts[, 1]
+
+#run 
+deseqdata <- DESeqDataSetFromMatrix(countData = round(countDataMatrix), 
+                                    colData = coldata, 
+                                    design = ~ Lineage) #removed round(countDataMatrix) function for rounding counts...
+
+dds <- DESeq(deseqdata, test = "Wald", )
+res <- results(dds)
+res
+
+```
+
+# Manual Inspection of DESeq2 Tables
+
+##DESeq2 Data 
+```{r}
+library("org.Hs.eg.db")
+#res.tidy <- results(dds, tidy=TRUE) #convert to tidy, run once
+#add gene names
+res.tidy_ann <- res.tidy 
+res.tidy_ann$symbol <- mapIds(org.Hs.eg.db, keys = res.tidy_ann$row, keytype = "ENSEMBL", column = "SYMBOL")
+res.tidy_ann
+#write.table(cts_ann,"cts_ann.csv", sep = ",", row.names = FALSE)
+```
+
+## Add gene names to count table for exploratory analysis 
+```{r}
+cts_ann <- cts 
+cts_ann$symbol <- mapIds(org.Hs.eg.db, keys = cts$gene_ID, keytype = "ENSEMBL", column = "SYMBOL")
+write.table(cts_ann,"cts_ann.csv", sep = ",", row.names = FALSE)
+```
+
+#PCA Analysis
+```{r PCA}
+
+library(DESeq2) #PCA Plot using DEseq2
+library(ggplot2) 
+library(ggforce)
+
+PCAdata <- plotPCA(rld, intgroup = c( "Lineage", "Virus"), returnData=TRUE)
+percentVar <- round(100 * attr(PCAdata, "percentVar"))
+
+pPCA <- ggplot(PCAdata, aes(x = PC1, y = PC2, color = Lineage, shape = Virus)) + 
+  geom_point(size = 8) + 
+  scale_color_manual(values = c("Yamagata" = "Red", "Victoria" = "Blue", "Mock" = "Black" )) + 
+  labs(x = paste0("PC1: ", percentVar[1], "% variance"), 
+       y = paste0("PC2: ", percentVar[2], "% variance"))
+
+pPCA_fig <- pPCA + theme_bw() +
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.line = element_line(colour = "black"),
+        axis.text.x=element_text(size=10), 
+        axis.text.y=element_text(size=10),
+        axis.title=element_text(size=18,face="bold")) 
+
+pPCA_fig
+```
+
+## count data normalization
+
+```{r}
+
+#BiocManager::install('PCAtools')
+#supervised or unsubervized clusering
+# run directly from DEseq2 Run on all comparison
+library(DESeq2)
+library(PCAtools)
+library(magrittr)
+
+#raw read normalization 
+
+#vst <- assay(vst(dds)) #vst normalization adjust dds 
+#rld <- assay(rlog(dds))
+
+#convert to df for gene addition if you need to 
+#vst <- as.data.frame(vst)
+# rld <- as.data.frame(rld)
+
+```
+
+# Annotation and DESeq2 Comparisons
+```{r independent comparisons POST DeSeq2}
+# independentcomparisons without gene names
+library(DESeq2)
+VicvsM <- results(dds, contrast = c("Lineage", "Victoria", "Mock"))
+YamvsM <- results(dds, contrast = c("Lineage", "Yamagata", "Mock"))
+VicvsYam <- results(dds, contrast = c("Lineage", "Victoria", "Yamagata"))
+
+# write CSV to wd
+write.csv(as.data.frame(VicvsM), file = "./DESeq2_output/VicvsMock_Comparison.csv")
+write.csv(as.data.frame(YamvsM), file = "./DESeq2_output/YamvsM_Comparison.csv")
+write.csv(as.data.frame(VicvsYam), file = "./DESeq2_output/VicvsYam_Comparison.csv")
+```
+
+## Add Gene names and parse by comparison
+```{r}
+
+# BiocManager::install("AnnotationDbi")
+
+library("org.Hs.eg.db")
+# convert to dataframe
+VicvsM_wID <- as.data.frame(VicvsM) # DeSeq2 output to dataframe
+YamvsM_wID <- as.data.frame(YamvsM) # DeSeq2 output to dataframe
+VicvsYam_wID <- as.data.frame(VicvsYam) # DeSeq2 output to dataframe
+
+# map symbols
+VicvsM_wID$symbol <- mapIds(org.Hs.eg.db, keys = rownames(VicvsM), keytype = "ENSEMBL", column = "SYMBOL")
+YamvsM_wID$symbol <- mapIds(org.Hs.eg.db, keys = rownames(YamvsM), keytype = "ENSEMBL", column = "SYMBOL")
+VicvsYam_wID$symbol <- mapIds(org.Hs.eg.db, keys = rownames(VicvsYam), keytype = "ENSEMBL", column = "SYMBOL")
+# makes a new column called symbol with the mapIDs function calling on the org... database with ENSEMBL IDs instead of entrez
+# write CSV to wd with gene names
+write.csv(as.data.frame(VicvsM_wID), file = "./DEseq2_output/annotated/VicvsMock_Comparison_ann.csv")
+write.csv(as.data.frame(YamvsM_wID), file = "./DEseq2_output/annotated/YamvsM_Comparison_ann.csv")
+write.csv(as.data.frame(VicvsYam_wID), file = "./DEseq2_output/annotated/VicvsYam_Comparison_ann.csv")
+
+```
+
+# Heatmap Visualization 
+
+## Heatmap with annotated gene IDs - MASTER
+
+Dependent on normalized gene counts from rld. 
+
+### Generic Heatmap - All Genes
+
+pheatmap of top clustered genes using assay() as matrix object 
+```{r}
+
+library(pheatmap)
+library(genefilter)
+library(DESeq2)
+
+#from https://www.biostars.org/p/274102/
+#set p adj value for filtering
+padj <- 0.08
+#filter for padj 
+res.index <- which(res$padj < padj)
+# set df for annotation data
+df <- as.data.frame(colData(dds[res.index,])[,c("Lineage", "Virus")])
+rownames(df) <- colnames(assay(rld ))
+
+#color annotations
+ann_colors = list(Lineage = c(Mock = "Black", Yamagata = "Red", Victoria = "Blue"))
+
+pheatmap(assay(rld[res.index,]),
+         cluster_rows=TRUE,
+         cluster_cols=TRUE,
+         show_rownames=FALSE,
+         show_colnames = FALSE,
+         angle_col = 45,
+         fontsize = 7,
+         cellwidth = 10,
+         treeheight_col=2,
+         scale="row",
+         annotation_col=df, 
+         border_color = NA,
+         annotation_colors = ann_colors,
+         filename = "./heatmaps/pheatmap_all_genes.jpeg")
+
+
+
+
+```
+
+Now we can Add genenames and set them as a row names (backwards but effective)
+This adds ALL gene names to the massive matrix, too small to read but effective. 
+
+```{r table with gene rownames labels}
+
+library(DESeq2)
+library(tidyverse)
+library(dplyr)
+library(org.Hs.eg.db)
+library(pheatmap)
+
+#from https://www.biostars.org/p/274102/
+
+#set p adj value for filtering
+padj <- 0.08
+
+#filter DEseq object for padj 
+res.index <- which(res$padj < padj)
+
+# set df for annotation data
+df <- as.data.frame(colData(dds[res.index,])[,c("Lineage", "Virus")])
+rownames(df) <- colnames(assay(rld))
+
+#convert assay datatype to df
+heat_label_large <- as.data.frame(assay(rld[res.index,]))
+
+heat_label_large$symbol <- mapIds(org.Hs.eg.db, keys = rownames(heat_label_large), keytype = "ENSEMBL", column = "SYMBOL") 
+
+#remove rowns with NA in symbol 
+heat_label_large <- na.omit(heat_label_large)
+heat_label_large <- data.frame(heat_label_large, row.names = heat_label_large$symbol)
+
+#color annotations
+ann_colors = list(Lineage = c(Mock = "Black", Yamagata = "Red", Victoria = "Blue"))
+
+#drop symbol row 
+heat_label_large <-  heat_label_large[,-15]
+
+pheatmap(heat_label_large,
+         cluster_rows=TRUE,
+         cluster_cols=TRUE,
+         show_rownames=TRUE,
+         show_colnames = FALSE,
+         angle_col = 45,
+         cellwidth = 20,
+         fontsize_row = 3,
+         treeheight_col=2,
+         scale="row",
+         annotation_col=df, 
+         border_color = NA,
+         annotation_colors=ann_colors,
+         filename = "./heatmaps/pheatmap_all_genes_rownames.jpeg")
+
+```
+
+#### Subset top 50
+Now we can make it so that we can subset the gene #s 
+
+```{r}
+
+#topVarGenes.1 <- head(order(-rowVars(assay(rld))), 25)
+#mat <- assay(rld)[ topVarGenes, ]#mat <- mat - rowMeans(mat)
+library(DESeq2)
+library(dplyr)
+library(org.Hs.eg.db)
+library(pheatmap)
+
+#from https://www.biostars.org/p/274102/
+
+#set p adj value for filtering
+padj <- 0.08
+
+#filter DEseq object for padj 
+res.index <- which(res$padj < padj)
+
+# set df for annotation data
+df <- as.data.frame(colData(dds[res.index,])[,c("Lineage", "Virus")])
+rownames(df) <- colnames(assay(rld))
+
+#convert assay datatype to df
+heat_label_large50 <- head(heat_label_large, 50) #take top 50 genes
+
+#color annotations
+ann_colors = list(Lineage = c(Mock = "Black", Yamagata = "Red", Victoria = "Blue"))
+
+#plot pheatmap
+heat_label_large50.p <- pheatmap(heat_label_large50,
+         cluster_rows=TRUE,
+         cluster_cols=TRUE,
+         show_rownames=TRUE,
+         show_colnames = FALSE,
+         cellwidth = 15,
+         fontsize_row = 4,
+         treeheight_col=2,
+         scale="row",
+         annotation_col=df, 
+         border_color = NA,
+         annotation_colors=ann_colors)
+         #filename = "./heatmaps/pheatmap_all_genes_rownames_50.jpeg")
+
+
+heat_label_large50.p
+
+```
+
+
+#### subset GO Type I IFN Genes ONLY 
+Now we can make it so that we can subset the gene #s 
+```{r}
+
+library(magrittr)
+library(DESeq2)
+library(tidyverse)
+library(org.Hs.eg.db)
+library(pheatmap)
+library(conflicted)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+
+#make list of type 1 IFN genes
+#Cellular response to type I interferon GO:0071357
+GO.0071357 <- c("IFI35", 
+                "OAS1", 
+                "OAS3", 
+                "OAS2", 
+                "STAT1", 
+                "IFIT3", 
+                "IFIT2", 
+                "ZBP1", 
+                "IFI6", 
+                "BST2", 
+                "XAF1",
+                "RSAD2", 
+                "OASL", 
+                "IFITM3", 
+                "IFIT5", 
+                "MX1", 
+                "ISG20", 
+                "MX2", 
+                "USP18", 
+                "IFIT1", 
+                "IFITM1", 
+                "ISG15", 
+                "IFI27", 
+                "IRF7", 
+                "IRF9")
+
+#filter tables to show only GO Type1 pathway
+
+heat_label_GOType1IFN <- filter(heat_label_large, rownames(heat_label_large) %in% GO.0071357)
+heat_label_GOType1IFN
+
+write.table(heat_label_GOType1IFN, file = "./heatmaps/tables/heat_label_GOType1IFN.csv", sep = ",") #write out table for inspection 
+
+#summarize tables with averages of columnes use mutate
+
+GOType1IFN.avg <- heat_label_GOType1IFN %>% 
+  mutate(Mock = rowMeans(heat_label_GOType1IFN[1:3])) %>% 
+  mutate(`Victoria` = rowMeans(heat_label_GOType1IFN[4:9])) %>% 
+  mutate(`Yamagata` = rowMeans(heat_label_GOType1IFN[10:14]))
+
+GOType1IFN.avg <- select(GOType1IFN.avg, Mock, `Victoria`, `Yamagata`) #be sure to prefer the dplyr package or specify with dplyr::select 
+
+#generate a new col data file
+
+df_Type1IFN <- data.frame(Lineage = c("Mock", "Victoria", "Yamagata"),
+                          row.names = c("Mock", "Victoria", "Yamagata"))
+
+#plot pheatmap
+Type1IFN_heatmap <- pheatmap(GOType1IFN.avg,
+         cluster_rows=TRUE,
+         cluster_cols=FALSE,
+         show_rownames=TRUE,
+         show_colnames = FALSE,
+         cellwidth = 15,
+         cellheight = 15,
+         fontsize_row = 8,
+         treeheight_col=2,
+         scale="row",
+         annotation_col=df_Type1IFN, 
+         border_color = 'grey',
+         annotation_colors=ann_colors,
+         filename = "./heatmaps/pheatmap_GO-Type1IFN.jpeg")
+
+Type1IFN_heatmap 
+
+```
+
+# Gene Clustering
+
+https://yulab-smu.top/biomedical-knowledge-mining-book/enrichplot.html 
+
+* [GO enrichment plottingtutorial](https://yulab-smu.top/biomedical-knowledge-mining-book/enrichplot.html)
+* [gprofiler](https://biit.cs.ut.ee/gprofiler/gost) Web Server
+* [tutorial](https://www.youtube.com/watch?v=BZyi8L7vBuc&list=PL8C1RoBcM04cmdWaN9p1uXSyKxlTNh0qz&index=39)
+* [GO Guru](https://yulab-smu.top/biomedical-knowledge-mining-book/enrichplot.html)
+
+
+## GO Data Cleaning and subsetting - add ENTREZ ID
+
+```{r convert ensemble to entrez IDs and clean}
+
+library(org.Hs.eg.db)
+library(tidyr)
+library(dplyr)
+
+#convert ensemble to entrez "rolls eyes" add to shit
+VicvsYam_wID$ENTREZ_ID <- mapIds(org.Hs.eg.db, keys = rownames(VicvsYam_wID), keytype="ENSEMBL", column = "ENTREZID")
+VicvsM_wID$ENTREZ_ID <- mapIds(org.Hs.eg.db, keys = rownames(VicvsM_wID), keytype="ENSEMBL", column = "ENTREZID")
+YamvsM_wID$ENTREZ_ID <- mapIds(org.Hs.eg.db, keys = rownames(YamvsM_wID), keytype="ENSEMBL", column = "ENTREZID")
+
+#drop nas and quantify? 
+go.VicvsYam_wID <- VicvsYam_wID %>% drop_na(ENTREZ_ID)
+go.VicvsM_wID <-  VicvsM_wID %>% drop_na(ENTREZ_ID)
+go.YamvsM_wID <-  YamvsM_wID %>% drop_na(ENTREZ_ID)
+
+
+#confirm NA with dplyr
+go.VicvsYam_wID %>%
+  summarise_all(funs(sum(is.na(.))))
+go.VicvsM_wID %>%
+  summarise_all(funs(sum(is.na(.))))
+go.YamvsM_wID %>%
+  summarise_all(funs(sum(is.na(.))))
+
+#good to go
+```
+
+What the hell, why so few genes... (removed NAs from other columns dipshit)
+
+```{r comparison subsets gene lists}
+
+#vic vs yam 
+upVicYam <- filter(go.VicvsYam_wID, log2FoldChange >= 1.5 & pvalue <= 0.05)
+downVicYam <- filter(go.VicvsYam_wID, log2FoldChange <= -1.5 & pvalue <= 0.05)
+
+upVicYam.list <- list(upVicYam$ENTREZ_ID)#extract ENTREZ ID as list
+upVicYam.list.ensemble <- list(rownames(upVicYam))
+
+downVicYam.list <- list(downVicYam$ENTREZ_ID) #extract ENTREZ ID as list
+
+#vic vs mock
+upVicvsMock <- filter(go.VicvsM_wID, log2FoldChange >= 1.5 & pvalue <= 0.05)
+downVicvsMock <- filter(go.VicvsM_wID, log2FoldChange <= -1.5 & pvalue <= 0.05)
+
+upVicvsMock.list <- list(upVicvsMock$ENTREZ_ID) #extract UP ENTREZ ID as list
+downVicvsMock.list <- list(downVicvsMock$ENTREZ_ID) #extract DOWN ENTREZ ID as list
+
+
+#yam vs mock 
+upYamvsMock <- filter(go.YamvsM_wID, log2FoldChange >= 1.5 & pvalue <= 0.05)
+downYamvsMock <- filter(go.YamvsM_wID, log2FoldChange <= -1.5 & pvalue <= 0.05)
+
+upYamvsMock.list <- list(upYamvsMock$ENTREZ_ID) #extract UP ENTREZ ID as list
+downYamvsMock.list <- list(downYamvsMock$ENTREZ_ID) #extract DOWN ENTREZ ID as list
+
+```
+
+### Go profiler
+
+```{r}
+
+library(gprofiler2)
+
+g.profiler <- function(gene_list){
+   return(gost(gene_list, organism = "hsapiens", ordered_query = TRUE)
+  )
+}
+
+#plotting function 
+
+g.prof_plot <- function(gost_run) {
+  return(gostplot(gost_run, 
+                  capped = FALSE, 
+                  interactive = TRUE)
+         )
+  
+}
+
+```
+
+gprofiler calling (run only once)
+
+```{r  gprofile calling}
+#upregulated by comparison group
+upVicYam.g <- g.profiler(upVicYam.list)
+upYamvsMock.g <- g.profiler(upYamvsMock.list)
+upVicvsMock.g <- g.profiler(upVicvsMock.list)
+
+#downregulated by comparison group 
+
+upVicYam.g <- g.profiler(upVicYam.list)
+upYamvsMock.g <- g.profiler(upYamvsMock.list)
+upVicvsMock.g <- g.profiler(upVicvsMock.list)
+
+```
+
+Plots 
+
+```{r gprofiler plotting}
+
+#upregulated by comparison group
+
+upVicYam.g.p <- g.prof_plot(upVicYam.g)
+upYamvsMock.g.p <- g.prof_plot(upYamvsMock.g)
+upVicvsMock.g.p <- g.prof_plot(upVicvsMock.g)
+
+upVicYam.g.p
+upYamvsMock.g.p 
+upVicvsMock.g.p
+
+#downregulated by comparison group 
+
+
+```
+
+## ShinyGO DataPlots 
+
+These gene lists are to be upoaded to shinyGO and subsequence GO lists sorted by FDR and FDR + fold change wil lbe imported back for plotting 
+
+```{r print gene lists}
+
+write.table((as.data.frame(upVicYam.list)), "./GO_Gene_lists/upVicYam.txt", col.names = FALSE, row.names = FALSE)
+write.table((as.data.frame(upYamvsMock.list)), "./GO_Gene_lists/upYamvsMock.txt", col.names = FALSE, row.names = FALSE) 
+write.table((as.data.frame(upVicvsMock.list)), "./GO_Gene_lists/upVicvsMock.txt", col.names = FALSE, row.names = FALSE) 
+
+```
+
+### Import ShinyGO Data
+
+```{r}
+
+upVicYam_enrichment <- read.csv("./GO_Gene_lists/Shiny_GO/upVicYam/sort_by_fdr-fold/upVicYam_enrichment.csv")
+upVicMock_enrichment <- read.csv("./GO_Gene_lists/Shiny_GO/upVicMock/upVicMock_enrichment-2.csv")
+upYamMock_enrichment <- read.csv("./GO_Gene_lists/Shiny_GO/upYamMock/upYamMock_enrichment.csv")
+
+#bind 
+up_cat_enrichment <- rbind(upVicYam_enrichment, upVicMock_enrichment, upYamMock_enrichment)
+up_cat_enrichment.1 <- rbind(upVicMock_enrichment, upYamMock_enrichment)
+
+```
+
+```{r}
+#remove meaningless GO pathway plots 
+library(dplyr)
+up_cat_enrichment.2 <- filter(up_cat_enrichment, Pathway != "Response to other organism")
+
+```
+
+### Plot ShinyGo Data 
+
+up Vic vs Yam vs Mock GO - 3 Comparisons
+```{r plot}
+
+library(magrittr)
+library(ggplot2)
+
+enrich_dot <- ggplot(up_cat_enrichment, aes(x = Comparison, y = Pathway, color = Enrichment.FDR, size = nGenes)) + 
+  geom_point() + 
+  scale_color_gradient(low = "#6800C9",
+                       space = "Lab",
+                       high = "#EE9F72")
+enrich_dot_fig <- enrich_dot + 
+                    theme_bw() +
+                    theme(axis.text.x = element_text(angle = 45, hjust=1),
+                          legend.title = element_text(size = 7), 
+                          legend.text = element_text(size = 7))
+
+enrich_dot_fig
+
+ggsave("./figures/GO_dotplots/enrich_dot_fig-all-compare_grad.png", plot = enrich_dot_fig, width = 7, height = 8)
+
+```
+
+up Vic Mock and up Yam Mock GO only 
+
+```{r}
+
+library(magrittr)
+library(ggplot2)
+
+enrich_dot.1 <- ggplot(up_cat_enrichment.1, aes(x = Comparison, y = Pathway, color = Enrichment.FDR, size = nGenes)) + 
+  geom_point() + 
+  scale_color_gradient(low = "#7B56BA", high = "black")
+
+enrich_dot.1_fig <- enrich_dot.1 + 
+                          theme_bw() + 
+                          theme(axis.text.x = element_text(angle = 45, hjust=1)) + 
+                          theme(axis.text.x = element_text(angle = 45, hjust=1),
+                                legend.title = element_text(size = 7), 
+                                legend.text = element_text(size = 7)) 
+
+enrich_dot.1_fig 
+
+ggsave("./figures/GO_dotplots/enrich_dot.1_fig.png",plot = enrich_dot.1_fig, width = 7, height = 8)
+
+```
+
+up Vic Mock and up Yam Mock GO only - WITH FDR facet 
+
+```{r}
+
+library(magrittr)
+library(ggplot2)
+
+enrich_dot_fdr <- ggplot(up_cat_enrichment.1, aes(x = Fold.Enrichment, y = Pathway, color = Enrichment.FDR, size = nGenes)) + 
+  geom_point() + 
+  scale_color_gradient(low = "#7B56BA", high = "black")
+
+enrich_dot_fdr_fig <- enrich_dot_fdr + 
+                          theme_bw() + 
+                          theme(axis.text.x = element_text(angle = 45, hjust=1)) + 
+                          theme(axis.text.x = element_text(angle = 45, hjust=1),
+                                legend.title = element_text(size = 7), 
+                                legend.text = element_text(size = 7)) +
+                          facet_wrap(. ~ Comparison)
+                      
+
+enrich_dot_fdr_fig
+
+ggsave("./figures/GO_dotplots/enrich_dot_facet_2_comp_fig.png",plot = enrich_dot_fdr_fig, width = 10, height = 8)
+```
+up All comparisons GO only - WITH FDR facet 
+```{r}
+
+library(magrittr)
+library(ggplot2)
+
+enrich_dot_all_fdr <- ggplot(up_cat_enrichment, aes(x = Fold.Enrichment, y = Pathway, color = Enrichment.FDR, size = nGenes)) + 
+  geom_point() + 
+  scale_color_gradient(low = "#7B56BA", high = "black")
+
+enrich_dot_fdr_all_fig <- enrich_dot_all_fdr + 
+                          theme_bw() + 
+                          theme(axis.text.x = element_text(angle = 45, hjust=1)) + 
+                          theme(axis.text.x = element_text(angle = 45, hjust=1),
+                                legend.title = element_text(size = 7), 
+                                legend.text = element_text(size = 7)) +
+                          facet_wrap(. ~ Comparison)
+                      
+
+enrich_dot_fdr_all_fig
+
+ggsave("./figures/GO_dotplots/enrich_dot_facet_3_comp_fig.png",plot = enrich_dot_fdr_all_fig, width = 10, height = 8)
+
+```
+
+### GO Bar Plots
+
+Bar Plot from: [link](https://yulab-smu.top/biomedical-knowledge-mining-book/enrichplot.html#biological-theme-comparison)
+
+* Not working out...
+
+```{r ElGIN GO Stats Bar Plot}
+
+library(org.Hs.eg.db)
+library(clusterProfiler)
+library(GO.db)
+library(GOstats)
+library(DOSE) #primary package used 
+
+upVicYam.list.char <- unlist(upVicYam.list)
+
+ggo <- groupGO(gene     = upVicYam.list.char,
+               OrgDb    = org.Hs.eg.db,
+               readable = TRUE,
+               keyType = "ENTREZID")
+
+head(ggo)
+
+library(enrichplot)
+barplot(edo, showCategory=20) 
+
+mutate(edo, qscore = -log(p.adjust, base=10)) %>% 
+    barplot(x="qscore")
+
+edo <- enrichDGN(upVicYam.list.char)
+
+library(enrichplot)
+barplot(edo, showCategory=20) 
+
+```
+
+### Pathway Visualization Overlay 
+
+Different Pathways from Kegg 
+* [influenza](https://www.kegg.jp/entry/map05164)
+
+```{r pathways plot - intersecting}
+
+#install.packages("pathview",repos="http://R-Forge.R-project.org")
+#library(pathview)
+library(pathview)
+#run example from https://rdrr.io/rforge/pathview/man/pathview.html
+
+i <- 1
+pv.out <- pathview(gene.data = gse16873.d[, 1], pathway.id = demo.paths$sel.paths[i], species = "hsa", out.suffix = "gse16873", kegg.native = TRUE)
+
+str(pv.out)
+head(pv.out$plot.data.gene)
+
+```
+
+## Volcano Plots by Treatment with Enhanced Volcano
+
+```{r enhancedvolcano function with gene Labels}
+
+# https://bioconductor.org/packages/devel/bioc/vignettes/EnhancedVolcano/inst/doc/EnhancedVolcano.html
+## Simple function for plotting a Volcano plot, returns a ggplot object
+
+library(EnhancedVolcano)
+
+deseq.volcano <- function(result, datasetName, gene_lab) {
+  return(EnhancedVolcano(result,
+    pCutoff = 0.05,  
+    FCcutoff = 0.8,
+    x = "log2FoldChange", y = "pvalue",
+    lab = result$symbol, #all lables
+    title = paste(datasetName,"48 hpi"),
+    subtitle = "FC >= 1.5 | pvalue <= 0.05",
+    caption = "DEseq2 Differentially Expressed Genes by Lineage",
+    selectLab = gene_lab,
+    max.overlaps = Inf, #top 15 genes? Or do not overlap over 
+    # Aesthetics
+    # Change text and icon sizes
+    labSize = 5,
+    #remove verticle threshold line
+    pointSize = 2,
+    axisLabSize = 11,
+    titleLabSize = 15,
+    subtitleLabSize = 8,
+    captionLabSize = 10,
+    colAlpha = 3 / 5,
+    legendPosition = "left",
+    legendLabSize = 10,
+    legendIconSize = 4,
+    drawConnectors = TRUE,
+    boxedLabels = TRUE,
+    border = 'full',
+    gridlines.major = FALSE, 
+    gridlines.minor = FALSE,
+    vlineType = blank,
+    hlineType = blank, 
+    # Set cutoffs
+    legendLabels=c('NS', 'Log(2)FC only', "p-value only", 'Log(2)FC and p-value')) + 
+      ggplot2::coord_cartesian(xlim=c(-6, 6)) +
+      ggplot2::scale_x_continuous(breaks=seq(-6,6, 2)))
+  
+}
+
+```
+
+### Volcano Plot with No annotation - printing total genes by up/down regulation
+```{r volcano - Basic Comparison No annotation}
+
+#print total DE genes in all sets 
+
+none <- c("")# No annotations
+
+a <- deseq.volcano(VicvsM_wID, datasetName = "Victoria vs Mock", none)
+b <- deseq.volcano(result = YamvsM_wID, datasetName = "Yamagata vs Mock", none)
+c <- deseq.volcano(result = VicvsYam_wID, datasetName = "Victoria vs Yamagata", none)
+
+a
+b 
+c
+
+ggsave("./Volcano_Plots_Export/Vic-vc-Mock.tiff", a, device = tiff ,height = 8, width = 7)
+ggsave("./Volcano_Plots_Export/Yam-vc-Mock.tiff", b, device = tiff ,height = 8, width = 7)
+ggsave("./Volcano_Plots_Export/Vic-vc-Yam.tiff", c, device = tiff ,height = 8, width = 7)
+
+```
+
+### Annotation of Top 15 upregulated genes
+
+We'll use the GO comparison list previouly made with FC >= 1.5 and pvalue <= 0.05
+
+```{r volcano - Top 15 upregulated Labeled}
+
+#order top DE 10 genes according to padj Vic Yam
+vicyam_10up <- head(upVicYam[order(upVicYam$padj),], 10) 
+vicyam_10up <- as.character(as.list(vicyam_10up$symbol))
+vicyam_10down <- head(downVicYam[order(downVicYam$padj),], 5)
+vicyam_10down <- as.character(as.list(vicyam_10down$symbol))
+vicyam_10 <- append(vicyam_10up,vicyam_10down)
+#Vic Mock 
+vicmock_10up <- head(upVicvsMock[order(upVicvsMock$padj),], 10) 
+vicmock_10up <- as.character(as.list(vicmock_10up$symbol))
+vicmock_10down <- head(downVicvsMock[order(downVicvsMock$padj),], 5)
+vicmock_10down <- as.character(as.list(vicmock_10down$symbol)) 
+vicmock_10 <- append(vicmock_10up,vicmock_10down)
+
+#Yam Mock
+yammock_10up <- head(upYamvsMock[order(upYamvsMock$padj),], 10) 
+yammock_10up <- as.character(as.list(yammock_10up$symbol))
+yammock_10down <- head(downYamvsMock[order(downYamvsMock$padj),], 5)
+yammock_10down <- as.character(as.list(yammock_10down$symbol))
+yammock_10 <- append(vicmock_10up,vicmock_10down)
+
+
+# Plot 
+
+d <- deseq.volcano(result = VicvsM_wID, datasetName = "Victoria vs Mock - Confirmation Targets", vicmock_10)
+e <- deseq.volcano(result = YamvsM_wID, datasetName = "Yamagata vs Mock- Confirmation Targets", yammock_10 )
+f <- deseq.volcano(result = VicvsYam_wID, datasetName = "Victoria vs Yamagata - Confirmation Targets", vicyam_10)
+
+d 
+e 
+f 
+
+ggsave("./Volcano_Plots_Export/Vic-vc-Mock-top.tiff", d, device = tiff ,height = 8, width = 7)
+ggsave("./Volcano_Plots_Export/Yam-vc-Mock-top.tiff", e, device = tiff ,height = 8, width = 7)
+ggsave("./Volcano_Plots_Export/Vic-vc-Yam-top.tiff", f, device = tiff ,height = 8, width = 7)
+
+```
+
+### Magpix RNAseq Targets
+
+```{r volcano - Magpix Targets }
+
+#label
+magpix_lab_less <- c('VEGF', 'TSLP', 'TNFRSF10B', 'TGFA', 'CCL17', 'CXCL2', 'MDC1', 'CCL2', 'IL18', 'CSF3', 'CCL26', 'CDH1', 'TNFSF13B') #list of Genes from magpix panel found in RNAseq featurecount table.
+magpix_lab_less_up <- ("TNFSF13B") #list of genes differentially expressed in magpix panel (of available reads)
+
+## Labeled targets for top genes in each pathway
+#g <- deseq.volcano(result = VicvsM_wID, datasetName = "Victoria vs Mock Magpix Target Transcripts", )
+#h <- deseq.volcano(result = YamvsM_wID, datasetName = "Yamagata vs Mock Magpix Target Transcripts", )
+#i <- deseq.volcano(result = VicvsYam_wID, datasetName = "Victoria vs Yamagata Magpix Transcripts", )
+
+``` 
+
+### Type 1 and 3 IFN Gene Annotation 
+```{r}
+
+IFN_genes <- c('IFNL1', 'IFNL2', 'IFNL3', 'IFNA', 'IFNB') #IFN Pathway Genes
+## Labeled targets for Venn overlap analysis
+j <- deseq.volcano(result = VicvsYam_wID, datasetName = "Yamagata vs Mock Unique", IFN_genes)
+j
+
+
+```
+
+### RNAseq Confirmation - RNA - Small Panel Only
+```{r}
+
+#Total number of differentially expressed genes per group
+#gene lists to define labels
+
+RNAseq_Confirm <- c("OASL", "IFITM1","TLR7", "RBFOX3", "USP17L1", "ZBP1")
+RNAseq_Confirm_large <- c("OASL", "IFITM1", "CXCR3", "ISG15", "MX2", "IFI6", "IFIT1", "IFIT2", "IFIT3", "IFI6")
+DEvennexpress <- c("PKP1", "EPHB2","ANKH", "ZNF713", "OSBPL10") #gprfiler pathway in Yam vs Mock unique list 
+
+k
+l
+m
+
+```
+
+### RNAseq Confirmation - Larger Protein Panel
+```{r}
+
+RNAseq_Confirm_large
+
+n <- deseq.volcano(result = VicvsYam_wID, datasetName = "Victoria vs Yam - Confirmation Targets", RNAseq_Confirm_large  )
+n
+
+```
+
+## Venn Diagram intersection by treatment
+
+### Triple Venn
+
+```{r Triple Venn - on Gene Names, message=TRUE, warning=TRUE, paged.print=FALSE}
+
+library(magrittr)
+library(ggplot2)
+library(tibble)
+
+#if (!require(devtools)) install.packages("devtools")
+#devtools::install_github("gaospecial/ggVennDiagram")
+library("ggVennDiagram")
+
+# Venn Diagram of DEseq2 list comparisons
+# Generates 3 lists with DEGs intercepting gene names
+# DOES NOT TAKE INTO ACCOUNT FOLD CHANGE
+
+pval_threshold <- 0.05 # p valu threshold
+fold_change <- 1.5 #fold change threshold 
+
+# sigOE_Vic_tb <- VicvsM %>%
+#   data.frame()
+# sigOE_Vic_tble <- as_tibble(sigOE_Vic_tb)
+# try <- filter(sigOE_Vic_tble, 'padj' < 0.05)
+# sigOE_Vic_tble_filt <- filter(sigOE_Vic_tble, 'padj' < pval_threshold & abs('log2FoldChange') > fold_change)
+# write.csv(sigOE_Vic_tb, file = "sigOE_Vic_tb.csv")
+
+Vic.degs <- row.names(VicvsM[which(VicvsM$padj <= pval_threshold), ]) 
+Yam.degs <- row.names(YamvsM[which(YamvsM$padj <= pval_threshold), ]) # list of degs in yam vs mock group
+VicYam.degs <- row.names(VicvsYam[which(VicvsYam$padj <= pval_threshold), ])
+
+#Vic.degs_fdr <- row.names(Vic.degs[which(Vic.degs$padj <= pval_threshold), ])
+#Yam.degs_fdr <- 
+#VicYam.degs_fdr <- 
+
+#generate a list of all three sets
+sets <- list (
+  Vic.degs,
+  Yam.degs,
+  VicYam.degs
+) 
+
+
+```
+
+#### Plot Triple Venn
+
+##### Upregulated Triple Venn 
+
+```{r Triple venn plot }
+ggVenn_1 <- ggVennDiagram(sets,
+              label = "count",
+              label_size = 5,
+              category.names = c("Vic vs Mock", "Yam vs Mock" , "Vic vs Yam"),
+              edge_lty = "solid"
+              )
+
+ggVenn_1 + 
+  scale_x_continuous(expand = expansion(mult = 0.2)) +
+  geom_sf(lty = "dashed", color = "grey") +
+  scale_fill_distiller(palette = "Greys", direction = 1)
+
+#print intersecting gene list to table
+
+length(ggVenn_1[["plot_env"]][["data"]]@region[["item"]][[1]])
+length(ggVenn_1[["plot_env"]][["data"]]@region[["item"]][[2]])
+
+VicvsMock_Unique_LIST <- as.data.frame(ggVenn_1[["plot_env"]][["data"]]@region[["item"]][[1]]) #vic vs mock
+YamvsMockUnique_LIST <- as.data.frame(ggVenn_1[["plot_env"]][["data"]]@region[["item"]][[2]])#vic v syam
+
+write.csv(VicvsMock_Unique_LIST, file = "VicvsMock_Unique_LIST.csv") # write list
+write.csv(YamvsMockUnique_LIST , file = "YamvsMock_Unique_LIST.csv") # write list
+
+```
+##### Downregulated Triple Venn 
+
+```{r Triple Venn Clean}
+
+venn <-  Venn(sets)
+venn_data <- process_data(venn)
+
+ggplot() + 
+  geom_sf(aes(fill = id), data = venn_region(venn_data), show.legend = FALSE) + 
+  
+  geom_sf(color = "grey", size = 1, data = venn_setedge(venn_data), show.legend = FALSE) + 
+  
+  geom_sf_text(aes(label = name), fontface = "bold", data = venn_setlabel(venn_data)) + 
+  
+  geom_sf_label(aes(label = name), data = venn_region(venn_data), alpha = 0.5) +
+  
+  theme_void()
+
+```
+
+
+### Double Venn 
+```{r}
+
+library(magrittr)
+library(ggplot2)
+library(tibble)
+library("ggVennDiagram")
+
+pval_threshold <- 0.05 # p valu threshold
+fold_change <- 1.5 #fold change threshold 
+
+Yam.degs <- row.names(YamvsM[which(YamvsM$pvalue <= pval_threshold), ])
+Vic.degs <- row.names(VicvsM[which(VicvsM$pvalue <= pval_threshold), ]) 
+ # list of degs in yam vs mock group
+
+#generate a list of all three sets
+sets <- list (
+  Yam.degs,
+  Vic.degs
+) 
+```
+
+Plot Double Venn 
+```{r}
+
+ggVenn_2 <- ggVennDiagram(sets,
+              label = "count",
+              label_size = 5,
+              category.names = c("Yam vs Mock","Vic vs Mock"),
+              edge_lty = "solid"
+              )
+
+ggVenn_2 + 
+  scale_x_continuous(expand = expansion(mult = 0.2)) +
+  geom_sf(lty = "dashed", color = "grey") +
+  scale_fill_distiller(palette = "Greys", direction = 1)
+
+#print intersecting gene list to table
+
+length(ggVenn_2[["plot_env"]][["data"]]@region[["item"]][[1]])
+length(ggVenn_2[["plot_env"]][["data"]]@region[["item"]][[2]])
+
+#VicvsMock_Unique_LIST <- as.data.frame(ggVenn_1[["plot_env"]][["data"]]@region[["item"]][[1]]) #vic vs mock
+#YamvsMockUnique_LIST <- as.data.frame(ggVenn_1[["plot_env"]][["data"]]@region[["item"]][[2]])#vic v syam
+
+#write.csv(VicvsMock_Unique_LIST, file = "VicvsMock_Unique_LIST.csv") # write list
+#write.csv(YamvsMockUnique_LIST , file = "YamvsMock_Unique_LIST.csv") # write list
+
+```
+
+
+## Gene-Specific Plots in Treatment Comparison
+
+```{r gene count plots}
+
+library(DESeq2)
+
+mcols(res, use.names=TRUE)
+topGene <- rownames(res)[which.min(res$padj)]
+plotCounts(dds, gene=topGene, intgroup=c("virus"))
+
+# ggplot object
+data <- plotCounts(dds,topGene, intgroup=c("virus"), returnData=TRUE)
+ggplot(data, aes(x=virus, y=count)) +
+  scale_y_log10() + 
+  geom_point(position=position_jitter(width=.1,height=0))
+
+data
+
+```
