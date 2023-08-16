@@ -405,7 +405,7 @@ library(org.Hs.eg.db)
 library(tidyr)
 library(dplyr)
 
-#convert ensemble to entrez "rolls eyes" add to shit
+#convert ensemble to entrez
 VicvsYam_wID$ENTREZ_ID <- mapIds(org.Hs.eg.db, keys = rownames(VicvsYam_wID), keytype="ENSEMBL", column = "ENTREZID")
 VicvsM_wID$ENTREZ_ID <- mapIds(org.Hs.eg.db, keys = rownames(VicvsM_wID), keytype="ENSEMBL", column = "ENTREZID")
 YamvsM_wID$ENTREZ_ID <- mapIds(org.Hs.eg.db, keys = rownames(YamvsM_wID), keytype="ENSEMBL", column = "ENTREZID")
@@ -423,11 +423,7 @@ go.VicvsM_wID %>%
   summarise_all(funs(sum(is.na(.))))
 go.YamvsM_wID %>%
   summarise_all(funs(sum(is.na(.))))
-
-#good to go
 ```
-
-What the hell, why so few genes... (removed NAs from other columns dipshit)
 
 ```{r comparison subsets gene lists}
 
